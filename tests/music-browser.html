@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><title>Timetravel audio verification</title>
+  <style>
+    body {
+      background: #10231e;
+      color: #e5eed5;
+      font: 16px system-ui;
+      padding: 40px;
+    }
+    button {
+      padding: 14px;
+    }
+    pre {
+      white-space: pre-wrap;
+    }
+  </style>
+  <h1>Time-following music · browser check</h1>
+  <p>
+    Renders the real soundtrack transport through Web Audio at every speed. No
+    microphone access is used.
+  </p>
+  <button id="run">Run audio verification</button>
+  <pre id="result">Ready</pre>
+  <script type="module">
+    import { Music, bufferOffset, MUSIC_SAMPLE_RATE } from "/src/music.ts";
+    document.querySelector("#run").onclick = async () => {
+      const output = document.querySelector("#result");
+      output.textContent = "Checking…";
+      try {
+        const rows = [];
+        for (const rate of [1, -1, -2, -4, -8, 2, 4, 8, 0]) {
+          const ctx = new OfflineAudioContext(
+            2,
+            MUSIC_SAMPLE_RATE,
+            MUSIC_SAMPLE_RATE,
+          );
+          // Offline contexts must schedule nodes before rendering. Expose a running
+          // transport clock while forwarding every real audio operation to the engine.
+          const schedulingContext = new Proxy(ctx, {
+            get(target, key) {
+              if (key === "state") return "running";
+              const value = Reflect.get(target, key, target);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+          const music = new Music(schedulingContext, ctx.destination);
+          music.sync({
+            tick: 900,
+            running: true,
+            temporal: rate !== 1,
+            direction: Math.sign(rate),
+            speed: Math.abs(rate),
+            oldest: 0,
+            entry: 2400,
+          });
+          const buffer = await ctx.startRendering();
+          const samples = buffer.getChannelData(0);
+          let sum = 0,
+            peak = 0;
+          for (const value of samples) {
+            sum += value * value;
+            peak = Math.max(peak, Math.abs(value));
+          }
+          const rms = Math.sqrt(sum / samples.length);
+          if (
+            !Number.isFinite(rms) ||
+            (rate === 0 ? peak !== 0 : rms < 0.001 || peak > 1)
+          )
+            throw Error(`Invalid output at ${rate}: ${rms}`);
+          rows.push({
+            rate,
+            rms: +rms.toFixed(5),
+            peak: +peak.toFixed(5),
+            offset: +bufferOffset(15, rate, 40, 24000).toFixed(5),
+          });
+        }
+        output.textContent =
+          "PASS: forward, reverse 1×/2×/4×/8×, and frozen silence\n" +
+          JSON.stringify(rows, null, 2);
+      } catch (error) {
+        output.textContent = "FAIL: " + error;
+      }
+    };
+  </script>
+</html>
